@@ -1,100 +1,218 @@
+
 import javax.security.auth.Subject;
 import javax.security.auth.callback.*;
 import javax.security.auth.login.*;
-import java.nio.file.Files;
-import java.nio.file.Path;
+import java.io.File;
+import java.io.IOException;
+import java.nio.charset.StandardCharsets;
+import java.security.Principal;
+import java.util.Arrays;
 import java.util.Map;
 
-void main() throws Exception {
-    // 1. Préparation de l'environnement (fichier propre + inscription d'Alice)
-    Conn auth = new Conn();
-    auth.inscription("roman", "MonSuperMdp1!");
-    auth.inscription("Natalia", "MonSuperMdp1!");
-    auth.inscription("Romzan", "roman");
-    auth.inscription("Enzo", "roman");
-    auth.inscription("Axel", "roman");
+public class Main {
 
+    public static void main(String[] args) throws Exception {
 
+        // Inscription des utilisateurs
+        Conn auth = new Conn();
 
+        auth.inscription("roman", "MonSuperMdp1!");
+        auth.inscription("Natalia", "MonSuperMdp1!");
 
-    // Configuration JAAS intégrée directement en mémoire (pas besoin de fichier jaas.config)
-    Configuration config = new Configuration() {
-        @Override
-        public AppConfigurationEntry[] getAppConfigurationEntry(String name) {
-            return new AppConfigurationEntry[]{
-                    new AppConfigurationEntry(
-                            LoginModule.class.getName(),
-                            AppConfigurationEntry.LoginModuleControlFlag.REQUIRED,
-                            Map.of()
-                    )
-            };
-        }
-    };
-
-    IO.println("=== 1. TESTS DE CONNEXION JAAS (login & commit) ===");
-
-    // Test 1 : Connexion réussie
-    LoginContext lcAlice = new LoginContext("TestApp", new Subject(), creerHandler("roman", "roman"), config);
-    boolean connexionReussie = false;
-    try {
-        lcAlice.login();
-        connexionReussie = true;
-    } catch (LoginException e) {
-        connexionReussie = false;
-    }
-    verifier("Connexion valide avec Alice", connexionReussie == true);
-
-    // Test 2 : Vérification du Subject et du Principal (Utilisateur)
-    Subject subject = lcAlice.getSubject();
-    boolean principalAjoute = subject.getPrincipals().stream()
-            .anyMatch(p -> p.getName().equals("Alice"));
-    verifier("Le Principal 'Alice' est bien ajouté au Subject", principalAjoute == true);
-
-    // Test 3 : Déconnexion (logout)
-    lcAlice.logout();
-    verifier("Déconnexion vide bien les Principals du Subject", subject.getPrincipals().isEmpty() == true);
-
-
-    IO.println("\n=== 2. TESTS D'ÉCHEC D'AUTHENTIFICATION ===");
-
-    // Test 4 : Mauvais mot de passe
-    verifier("Mauvais mot de passe refusé", testerEchec("Alice", "MauvaisMdp1!", config));
-
-    // Test 5 : Utilisateur inconnu
-    verifier("Utilisateur inconnu refusé", testerEchec("Inconnu", "MonSuperMdp1!", config));
-
-    // Test 6 : Identifiants null (saisie vide)
-    verifier("Identifiants null refusés", testerEchec(null, null, config));
-}
-
-// --- MÉTHODES UTILITAIRES ---
-
-CallbackHandler creerHandler(String pseudo, String mdp) {
-    return callbacks -> {
-        for (Callback cb : callbacks) {
-            if (cb instanceof NameCallback nc) {
-                nc.setName(pseudo);
-            } else if (cb instanceof PasswordCallback pc) {
-                pc.setPassword(mdp != null ? mdp.toCharArray() : null);
+        // Configuration JAAS
+        Configuration config = new Configuration() {
+            @Override
+            public AppConfigurationEntry[] getAppConfigurationEntry(String name) {
+                return new AppConfigurationEntry[]{
+                        new AppConfigurationEntry(
+                                LoginModule.class.getName(),
+                                AppConfigurationEntry.LoginModuleControlFlag.REQUIRED,
+                                Map.of()
+                        )
+                };
             }
-        }
-    };
-}
+        };
 
-boolean testerEchec(String pseudo, String mdp, Configuration config) {
-    try {
-        LoginContext lc = new LoginContext("TestApp", new Subject(), creerHandler(pseudo, mdp), config);
-        lc.login();
-        return false; // Si on arrive ici, la connexion est passée alors qu'elle n'aurait pas dû
-    } catch (LoginException e) {
-        return true; // Comportement attendu : JAAS a bien rejeté la connexion
+        // Tests JAAS
+        Utilisateur utilisateur =  testerConnexion(config,"Enzo","MonSuperMdp1!");
+        testerEchecAuthentification(config);
+
+        // Tests de gestion des fichiers
+        testerEnregistrement(utilisateur);
+        testerConversion();
+        testerListeFichiers();
     }
-}
 
-void verifier(String nomDuTest, boolean condition) {
-    if (condition) {
-        IO.println("[OK]     " + nomDuTest);
-    } else {
-        IO.println("[ERREUR] " + nomDuTest);
+    // ==========================================
+    // TESTS JAAS
+    // ==========================================
+
+    public static Utilisateur testerConnexion(Configuration config,String pseudo, String mdp) throws Exception {
+
+        System.out.println("\n=== TESTS DE CONNEXION JAAS ===");
+
+        LoginContext lc = new LoginContext(
+                "TestApp",
+                new Subject(),
+                creerHandler(pseudo, mdp),
+                config
+        );
+
+        try {
+            lc.login();
+        } catch (LoginException e) {
+            verifier("Connexion valide avec " + pseudo, false);
+            System.out.println("Cause : " + e.getMessage());
+            throw e;
+        }
+
+        verifier("Connexion valide avec "+pseudo, true);
+
+        Subject subject = lc.getSubject();
+
+        boolean principalAjoute = subject.getPrincipals().stream()
+                .anyMatch(p -> p.getName().equals(pseudo));
+
+        verifier("Principal roman ajouté au Subject", principalAjoute);
+
+        if (!principalAjoute) {
+            lc.logout();
+            throw new IllegalStateException("Le LoginModule n'a ajouté aucun Principal.");
+        }
+
+        Principal principal = subject.getPrincipals()
+                .iterator()
+                .next();
+
+        Utilisateur utilisateur = new Utilisateur(principal.getName());
+
+        // On ne déconnecte pas encore : on conserve la session.
+        return utilisateur;
+    }
+    public static void testerEchecAuthentification(Configuration config) {
+
+        System.out.println("\n=== TESTS D'ÉCHEC D'AUTHENTIFICATION ===");
+
+        verifier(
+                "Mauvais mot de passe refusé",
+                testerEchec("roman", "MauvaisMdp1!", config)
+        );
+
+        verifier(
+                "Utilisateur inconnu refusé",
+                testerEchec("Inconnu", "MonSuperMdp1!", config)
+        );
+
+        verifier(
+                "Identifiants null refusés",
+                testerEchec(null, null, config)
+        );
+    }
+
+    public static CallbackHandler creerHandler(String pseudo, String mdp) {
+
+        return callbacks -> {
+            for (Callback cb : callbacks) {
+
+                if (cb instanceof NameCallback nc) {
+                    nc.setName(pseudo);
+
+                } else if (cb instanceof PasswordCallback pc) {
+                    pc.setPassword(mdp != null ? mdp.toCharArray() : null);
+                }
+            }
+        };
+    }
+
+    public static boolean testerEchec(
+            String pseudo,
+            String mdp,
+            Configuration config
+    ) {
+        try {
+            LoginContext lc = new LoginContext(
+                    "TestApp",
+                    new Subject(),
+                    creerHandler(pseudo, mdp),
+                    config
+            );
+
+            lc.login();
+            lc.logout();
+
+            return false;
+
+        } catch (LoginException e) {
+            return true;
+        }
+    }
+
+    // ==========================================
+    // TESTS DE GESTION DES FICHIERS
+    // ==========================================
+
+    public static void testerEnregistrement(Utilisateur utilisateur) throws IOException {
+
+        System.out.println("\n=== TESTS DES FICHIERS ===");
+
+        Fichier gestion = new Fichier();
+
+        File dossier = new File("roman");
+
+        byte[] contenu = "Bonjour axel ca va !".getBytes(StandardCharsets.UTF_8);
+
+        File fichier = gestion.enregistrer(
+                contenu,
+                "axel.txt",
+                utilisateur
+        );
+
+        verifier("Enregistrement du fichier", fichier.exists());
+    }
+
+    public static void testerConversion() throws IOException {
+
+        Fichier gestion = new Fichier();
+
+        File fichier = new File("utilisateur/roman/test.txt");
+
+        byte[] resultat = gestion.convertirFichierVersByte(fichier);
+
+        String texte = new String(resultat, StandardCharsets.UTF_8);
+
+        verifier(
+                "Conversion du fichier en bytes",
+                texte.equals("Bonjour Roman !")
+        );
+    }
+
+    public static void testerListeFichiers() {
+
+        Fichier gestion = new Fichier();
+
+        Utilisateur utilisateur = new Utilisateur("Enzo");
+
+        File[] fichiers = gestion.list(utilisateur);
+        for (File fichier : fichiers) {
+            System.out.println("- " + fichier.getName());
+        }
+        boolean present = fichiers != null &&
+                Arrays.stream(fichiers)
+                        .anyMatch(f -> f.getName().equals("test.txt"));
+
+        verifier("Récupération des fichiers utilisateur", present);
+    }
+
+    // ==========================================
+    // OUTIL DE VÉRIFICATION
+    // ==========================================
+
+    public static void verifier(String nomDuTest, boolean condition) {
+
+        if (condition) {
+            System.out.println("[OK]     " + nomDuTest);
+        } else {
+            System.out.println("[ERREUR] " + nomDuTest);
+        }
     }
 }

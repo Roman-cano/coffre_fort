@@ -16,7 +16,7 @@ public class Conn {
     private static final int ITERATIONS = 65536;
     private static final int LONGUEUR_CLE = 256;
 
-    public void inscription(String pseudo, String mdp) throws Exception {
+    public boolean inscription(String pseudo, String mdp) throws Exception {
         if (!estPresent(pseudo) && estFort(mdp)) {
             SecureRandom random = new SecureRandom();
             byte[] sel = new byte[16];
@@ -34,7 +34,9 @@ public class Conn {
                     StandardOpenOption.CREATE,
                     StandardOpenOption.APPEND
             );
+            return true;
         }
+    return false;
     }
 
     public boolean connexion(String pseudo, String mdp) {
